@@ -407,13 +407,7 @@
                 </div>
             </div>
 
-            <div class="form-group" style="margin-top: 6px;">
-                <label>Cloud Sync (optional)</label>
-                <input type="text" id="syncUrl" placeholder="Supabase REST URL e.g. https://xyz.supabase.co/rest/v1" style="margin-bottom:8px;">
-                <input type="text" id="syncKey" placeholder="Anon public key" style="margin-bottom:8px;">
-                <button type="button" class="btn-secondary" id="saveSyncSettings">Save Sync Settings</button>
-                <div style="font-size:0.85rem;color:var(--text-secondary);margin-top:8px;">Leave blank to disable cloud sync. The remote table must be named <strong>projects</strong> and allow anonymous read/write or use a valid key.</div>
-            </div>
+            <!-- Cloud sync handled via Supabase constants in the script; no local sync UI -->
             
             <button type="submit" class="btn-primary">Add Project</button>
         </form>
@@ -426,93 +420,71 @@
     </div>
 
     <script>
-        // Global variables
-        let projects = [];
-        let editingProject = null;
-        let isAdminAuthenticated = false;
-        const ADMIN_PASSWORD = "veluna";
-        const STORAGE_KEY = "veluna_projects";
+    // Global variables
+    let projects = [];
+    let editingProject = null;
+    let isAdminAuthenticated = false;
+    const ADMIN_PASSWORD = "veluna";
+    // Supabase (single source of truth) - configured as requested
+    const SUPABASE_REST_URL = 'https://mwgiyscunaolxaxuxpzc.supabase.co/rest/v1/projects';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im13Z2l5c2N1bmFvbHhheHV4cHpjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwODgwMjIsImV4cCI6MjA3MzY2NDAyMn0.w6WNg8tn0yVc1quD1NUZXHiwcw873bx6iGDl7Sqwv4g';
 
-        // Load projects from localStorage on page load
-        function loadProjects() {
+    // Load projects from Supabase (single source of truth)
+        async function loadProjects() {
             try {
-                // Try local first
-                const savedProjects = localStorage.getItem(STORAGE_KEY);
-                if (savedProjects) {
-                    projects = JSON.parse(savedProjects);
-                    // Remove any unwanted seeded project by title (user requested deletion)
-                    try {
-                        projects = projects.filter(p => !(p.title && p.title.toString().trim().toLowerCase() === 'ai chatbot assistant'));
-                    } catch (err) {
-                        // ignore filter errors
+                const res = await fetch(SUPABASE_REST_URL + '?select=*', {
+                    headers: {
+                        'apikey': SUPABASE_ANON_KEY,
+                        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY
                     }
-                } else {
-                    projects = [];
-                }
-
-                // If cloud sync settings are saved, attempt to fetch remote projects and merge
-                const syncUrl = localStorage.getItem('veluna_sync_url');
-                const syncKey = localStorage.getItem('veluna_sync_key');
-
-                if (syncUrl && syncKey) {
-                    fetch(syncUrl + '?select=*', {
-                        headers: {
-                            'apikey': syncKey,
-                            'Authorization': 'Bearer ' + syncKey
-                        }
-                    }).then(res => {
-                        if (!res.ok) throw new Error('Remote fetch failed');
-                        return res.json();
-                    }).then(remote => {
-                        if (Array.isArray(remote)) {
-                            // Merge remote and local by id (remote overwrites local when ids conflict)
-                            const map = new Map();
-                            (projects || []).forEach(p => map.set(p.id, p));
-                            remote.forEach(r => map.set(r.id, r));
-                            projects = Array.from(map.values());
-                            // persist merged result locally
-                            localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
-                            renderProjects();
-                        }
-                    }).catch(err => {
-                        console.warn('Cloud sync fetch failed:', err);
-                        // keep local projects
-                    });
-                }
+                });
+                if (!res.ok) throw new Error('Failed to fetch projects from Supabase: ' + res.status);
+                const data = await res.json();
+                // Normalize into expected shape
+                projects = Array.isArray(data) ? data.map(d => ({
+                    id: d.id,
+                    title: d.title,
+                    description: d.description,
+                    image: d['image url'] || (d.image && d.image.url) || null,
+                    url: d.url || null,
+                    tags: d.tags || []
+                })) : [];
+                renderProjects();
             } catch (error) {
-                console.error("Error loading projects:", error);
+                console.error('Error loading projects from Supabase:', error);
                 projects = [];
             }
         }
 
-        // Save projects to localStorage
-        function saveProjects() {
+    // Save a single project to Supabase (upsert)
+        async function saveProjectToRemote(p) {
             try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+                const payload = {
+                    id: p.id,
+                    title: p.title || null,
+                    description: p.description || null,
+                    "image url": p.image || null,
+                    tags: p.tags || null,
+                    created_at: p.created_at || null
+                };
 
-                // If cloud sync configured, attempt to upsert projects to remote
-                const syncUrl = localStorage.getItem('veluna_sync_url');
-                const syncKey = localStorage.getItem('veluna_sync_key');
-                if (syncUrl && syncKey) {
-                    // Upsert each project; relies on remote table 'projects' with primary key 'id'
-                    projects.forEach(p => {
-                        fetch(syncUrl, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'apikey': syncKey,
-                                'Authorization': 'Bearer ' + syncKey,
-                                // prefer merge-duplicates to emulate upsert on Supabase
-                                'Prefer': 'resolution=merge-duplicates'
-                            },
-                            body: JSON.stringify(p)
-                        }).then(res => {
-                            if (!res.ok) console.warn('Upsert failed for project', p.id, res.status);
-                        }).catch(err => console.warn('Sync upsert error', err));
-                    });
+                const res = await fetch(SUPABASE_REST_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'apikey': SUPABASE_ANON_KEY,
+                        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+                        'Prefer': 'resolution=merge-duplicates'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!res.ok) {
+                    const txt = await res.text();
+                    console.warn('Remote upsert failed', res.status, txt);
                 }
-            } catch (error) {
-                console.error("Error saving projects:", error);
+            } catch (err) {
+                console.error('Error saving project to Supabase:', err);
             }
         }
 
@@ -889,13 +861,27 @@
             }
             
             if (confirm(`Are you sure you want to delete "${project.title}"?\n\nThis action cannot be undone.`)) {
-                projects = projects.filter(p => p.id !== id);
-                saveProjects();
-                renderProjects();
-                
-                if (editingProject === id) {
-                    clearForm();
-                }
+                // Delete remotely via Supabase REST
+                fetch(SUPABASE_REST_URL + `?id=eq.${id}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'apikey': SUPABASE_ANON_KEY,
+                        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY
+                    }
+                }).then(async res => {
+                    if (!res.ok) {
+                        const txt = await res.text();
+                        console.warn('Delete failed', res.status, txt);
+                        alert('Failed to delete project on remote. See console.');
+                        return;
+                    }
+                    // Reload from remote
+                    await loadProjects();
+                    if (editingProject === id) clearForm();
+                }).catch(err => {
+                    console.error('Remote delete error', err);
+                    alert('Error deleting project. See console for details.');
+                });
             }
         }
 
@@ -952,10 +938,14 @@
                 try {
                     const importedProjects = JSON.parse(e.target.result);
                     if (Array.isArray(importedProjects)) {
-                        projects = importedProjects;
-                        saveProjects();
-                        renderProjects();
-                        alert('Projects imported successfully!');
+                        // Upsert each imported project to remote
+                        (async () => {
+                            for (const p of importedProjects) {
+                                await saveProjectToRemote(p);
+                            }
+                            await loadProjects();
+                            alert('Projects imported and synced to remote successfully!');
+                        })();
                     } else {
                         alert('Invalid file format. Please select a valid JSON file.');
                     }
@@ -1025,7 +1015,7 @@
 
         // Form submission
         document.addEventListener('DOMContentLoaded', function() {
-            // Load projects from localStorage
+            // Load projects from Supabase
             loadProjects();
             
             // Initial render
@@ -1058,38 +1048,12 @@
                 tagInput.addEventListener('keydown', handleTagInput);
             }
 
-            // Prefill cloud sync inputs from localStorage
-            const syncUrlInput = document.getElementById('syncUrl');
-            const syncKeyInput = document.getElementById('syncKey');
-            const savedSyncUrl = localStorage.getItem('veluna_sync_url');
-            const savedSyncKey = localStorage.getItem('veluna_sync_key');
-            if (syncUrlInput && savedSyncUrl) syncUrlInput.value = savedSyncUrl;
-            if (syncKeyInput && savedSyncKey) syncKeyInput.value = savedSyncKey;
-
-            // Save sync settings button
-            const saveSyncBtn = document.getElementById('saveSyncSettings');
-            if (saveSyncBtn) {
-                saveSyncBtn.addEventListener('click', function() {
-                    const url = (document.getElementById('syncUrl') && document.getElementById('syncUrl').value.trim()) || '';
-                    const key = (document.getElementById('syncKey') && document.getElementById('syncKey').value.trim()) || '';
-                    if (url && key) {
-                        localStorage.setItem('veluna_sync_url', url);
-                        localStorage.setItem('veluna_sync_key', key);
-                        alert('Sync settings saved. Next save or page load will attempt cloud sync.');
-                        // attempt immediate load/merge from remote
-                        loadProjects();
-                    } else {
-                        localStorage.removeItem('veluna_sync_url');
-                        localStorage.removeItem('veluna_sync_key');
-                        alert('Cloud sync disabled. Projects will remain local.');
-                    }
-                });
-            }
+            // Supabase-only mode: no local sync inputs
             
-            // Project form submission
-            document.getElementById('projectForm').addEventListener('submit', function(e) {
+            // Project form submission — Supabase-only upsert
+            document.getElementById('projectForm').addEventListener('submit', async function(e) {
                 e.preventDefault();
-                
+
                 const title = document.getElementById('projectTitle').value;
                 const description = document.getElementById('projectDescription').value;
                 const image = document.getElementById('projectImage').value;
@@ -1105,7 +1069,7 @@
                 });
 
                 if (editingProject) {
-                    // Update existing project
+                    // Update existing project in memory
                     const projectIndex = projects.findIndex(p => p.id === editingProject);
                     if (projectIndex !== -1) {
                         projects[projectIndex] = {
@@ -1116,9 +1080,11 @@
                             url,
                             tags
                         };
+                        // push update to remote
+                        await saveProjectToRemote(projects[projectIndex]);
                     }
                 } else {
-                    // Add new project
+                    // Add new project and push to remote
                     const newProject = {
                         id: Date.now(),
                         title,
@@ -1127,13 +1093,14 @@
                         url,
                         tags
                     };
-                    projects.push(newProject);
+                    // push to remote
+                    await saveProjectToRemote(newProject);
                 }
-                
-                saveProjects();
-                renderProjects();
+
+                // reload from remote to ensure consistent state
+                await loadProjects();
                 clearForm();
-                
+
                 // Close admin panel on mobile
                 if (window.innerWidth <= 768) {
                     document.getElementById('adminPanel').classList.remove('open');
