@@ -469,8 +469,7 @@
                 };
                 // only include created_at when explicitly provided (avoid sending null)
                 if (p.created_at) payload.created_at = p.created_at;
-
-                const res = await fetch(SUPABASE_REST_URL, {
+                const doPost = (bodyPayload) => fetch(SUPABASE_REST_URL, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -478,13 +477,33 @@
                         'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
                         'Prefer': 'resolution=merge-duplicates'
                     },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(bodyPayload)
                 });
+
+                // First attempt with url included (if present)
+                let res = await doPost(payload);
 
                 if (!res.ok) {
                     const txt = await res.text();
                     console.error('Remote upsert failed', res.status, txt);
                     console.error('Upsert payload:', payload);
+
+                    // If Supabase reports the 'url' column is missing, retry without it
+                    if (txt && txt.toString().includes("Could not find the 'url' column")) {
+                        console.warn("Supabase schema does not contain a 'url' column. Retrying upsert without the url field.");
+                        // Remove url and retry once
+                        delete payload.url;
+                        const retry = await doPost(payload);
+                        if (!retry.ok) {
+                            const rtxt = await retry.text();
+                            console.error('Retry upsert without url failed', retry.status, rtxt);
+                            console.warn("To enable the Live Demo button, add a text column named 'url' to your 'projects' table in Supabase or update the client mapping to an existing column.");
+                        } else {
+                            const body = await retry.text();
+                            try { console.log('Remote upsert success (without url)', JSON.parse(body)); }
+                            catch (e) { console.log('Remote upsert success (without url - raw):', body); }
+                        }
+                    }
                 } else {
                     // helpful debug log for success
                     const body = await res.text();
