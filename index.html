@@ -481,7 +481,16 @@
 
                 if (!res.ok) {
                     const txt = await res.text();
-                    console.warn('Remote upsert failed', res.status, txt);
+                    console.error('Remote upsert failed', res.status, txt);
+                    console.error('Upsert payload:', payload);
+                } else {
+                    // helpful debug log for success
+                    const body = await res.text();
+                    try {
+                        console.log('Remote upsert success', JSON.parse(body));
+                    } catch (e) {
+                        console.log('Remote upsert success (raw):', body);
+                    }
                 }
             } catch (err) {
                 console.error('Error saving project to Supabase:', err);
