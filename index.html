@@ -464,9 +464,10 @@
                     title: p.title || null,
                     description: p.description || null,
                     "image url": p.image || null,
-                    tags: p.tags || null,
-                    created_at: p.created_at || null
+                    tags: p.tags || null
                 };
+                // only include created_at when explicitly provided (avoid sending null)
+                if (p.created_at) payload.created_at = p.created_at;
 
                 const res = await fetch(SUPABASE_REST_URL, {
                     method: 'POST',
