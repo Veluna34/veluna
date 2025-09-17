@@ -406,6 +406,14 @@
                     <input type="text" class="tag-input" placeholder="Type tag and press Enter">
                 </div>
             </div>
+
+            <div class="form-group" style="margin-top: 6px;">
+                <label>Cloud Sync (optional)</label>
+                <input type="text" id="syncUrl" placeholder="Supabase REST URL e.g. https://xyz.supabase.co/rest/v1" style="margin-bottom:8px;">
+                <input type="text" id="syncKey" placeholder="Anon public key" style="margin-bottom:8px;">
+                <button type="button" class="btn-secondary" id="saveSyncSettings">Save Sync Settings</button>
+                <div style="font-size:0.85rem;color:var(--text-secondary);margin-top:8px;">Leave blank to disable cloud sync. The remote table must be named <strong>projects</strong> and allow anonymous read/write or use a valid key.</div>
+            </div>
             
             <button type="submit" class="btn-primary">Add Project</button>
         </form>
@@ -428,6 +436,7 @@
         // Load projects from localStorage on page load
         function loadProjects() {
             try {
+                // Try local first
                 const savedProjects = localStorage.getItem(STORAGE_KEY);
                 if (savedProjects) {
                     projects = JSON.parse(savedProjects);
@@ -438,12 +447,37 @@
                         // ignore filter errors
                     }
                 } else {
-                    // Default sample projects if none saved
-                    projects = [
+                    projects = [];
+                }
 
-            
-                    ];
-                    saveProjects();
+                // If cloud sync settings are saved, attempt to fetch remote projects and merge
+                const syncUrl = localStorage.getItem('veluna_sync_url');
+                const syncKey = localStorage.getItem('veluna_sync_key');
+
+                if (syncUrl && syncKey) {
+                    fetch(syncUrl + '?select=*', {
+                        headers: {
+                            'apikey': syncKey,
+                            'Authorization': 'Bearer ' + syncKey
+                        }
+                    }).then(res => {
+                        if (!res.ok) throw new Error('Remote fetch failed');
+                        return res.json();
+                    }).then(remote => {
+                        if (Array.isArray(remote)) {
+                            // Merge remote and local by id (remote overwrites local when ids conflict)
+                            const map = new Map();
+                            (projects || []).forEach(p => map.set(p.id, p));
+                            remote.forEach(r => map.set(r.id, r));
+                            projects = Array.from(map.values());
+                            // persist merged result locally
+                            localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+                            renderProjects();
+                        }
+                    }).catch(err => {
+                        console.warn('Cloud sync fetch failed:', err);
+                        // keep local projects
+                    });
                 }
             } catch (error) {
                 console.error("Error loading projects:", error);
@@ -455,6 +489,28 @@
         function saveProjects() {
             try {
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
+
+                // If cloud sync configured, attempt to upsert projects to remote
+                const syncUrl = localStorage.getItem('veluna_sync_url');
+                const syncKey = localStorage.getItem('veluna_sync_key');
+                if (syncUrl && syncKey) {
+                    // Upsert each project; relies on remote table 'projects' with primary key 'id'
+                    projects.forEach(p => {
+                        fetch(syncUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'apikey': syncKey,
+                                'Authorization': 'Bearer ' + syncKey,
+                                // prefer merge-duplicates to emulate upsert on Supabase
+                                'Prefer': 'resolution=merge-duplicates'
+                            },
+                            body: JSON.stringify(p)
+                        }).then(res => {
+                            if (!res.ok) console.warn('Upsert failed for project', p.id, res.status);
+                        }).catch(err => console.warn('Sync upsert error', err));
+                    });
+                }
             } catch (error) {
                 console.error("Error saving projects:", error);
             }
@@ -1000,6 +1056,34 @@
             const tagInput = document.querySelector('#tagsInput .tag-input');
             if (tagInput) {
                 tagInput.addEventListener('keydown', handleTagInput);
+            }
+
+            // Prefill cloud sync inputs from localStorage
+            const syncUrlInput = document.getElementById('syncUrl');
+            const syncKeyInput = document.getElementById('syncKey');
+            const savedSyncUrl = localStorage.getItem('veluna_sync_url');
+            const savedSyncKey = localStorage.getItem('veluna_sync_key');
+            if (syncUrlInput && savedSyncUrl) syncUrlInput.value = savedSyncUrl;
+            if (syncKeyInput && savedSyncKey) syncKeyInput.value = savedSyncKey;
+
+            // Save sync settings button
+            const saveSyncBtn = document.getElementById('saveSyncSettings');
+            if (saveSyncBtn) {
+                saveSyncBtn.addEventListener('click', function() {
+                    const url = (document.getElementById('syncUrl') && document.getElementById('syncUrl').value.trim()) || '';
+                    const key = (document.getElementById('syncKey') && document.getElementById('syncKey').value.trim()) || '';
+                    if (url && key) {
+                        localStorage.setItem('veluna_sync_url', url);
+                        localStorage.setItem('veluna_sync_key', key);
+                        alert('Sync settings saved. Next save or page load will attempt cloud sync.');
+                        // attempt immediate load/merge from remote
+                        loadProjects();
+                    } else {
+                        localStorage.removeItem('veluna_sync_url');
+                        localStorage.removeItem('veluna_sync_key');
+                        alert('Cloud sync disabled. Projects will remain local.');
+                    }
+                });
             }
             
             // Project form submission
